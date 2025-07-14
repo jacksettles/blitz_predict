@@ -1,0 +1,1 @@
+torchrun --standalone --nproc_per_node=gpu train_model.py --trainfile ../data/processed_data/val.pt --valfile ../data/processed_data/test.pt --save_path sched_free_test --n_layer 4 --d_model 207 --lr 5e-5 --output_size 3 --num_epochs 2 --schedule_free 1
