@@ -27,7 +27,7 @@ parser.add_argument("--random_play", type=int, default=1, help="Whether the play
 parser.add_argument("--event", type=str, help="If random_play is False, can specify an event type, like 'qb_sack'.")
 parser.add_argument("--save_as", type=str, default="mp4", help="Save clip as gif or mp4")
 
-conn = sqlite3.connect("../data/nfldata.db")
+conn = sqlite3.connect("./data/nfldata.db")
 
 if torch.cuda.is_available():
     device = "cuda"

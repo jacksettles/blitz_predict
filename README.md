@@ -33,8 +33,7 @@ Once that is done, place them in data/raw/
 Build and write the .db to the data/ directory. This is taken care of with the following commands.
 
 ```bash
-cd data_engineering/
-python build_db.py
+PYTHONPATH=. python data_engineering/build_db.py
 ```
 
 ### 5. Process the data
@@ -49,20 +48,20 @@ The problem with this was - on run plays especially - sometimes defenders just h
 
 Luckily, the players_play.csv file has a feature for wasInitialPassRusher, showing the defenders who started the play as a pass rusher.
 
-Inside of data_engineering/, call:
+To engineer the labels, call:
 
 ```bash
-python new_label_engineering.py
+PYTHONPATH=. python new_label_engineering.py
 ```
 
 This file puts the labels next to each player in each frame, plus some other features.
 
 #### 2. Second we have to create the sequences for the model
 
-Inside of data_engineering/, call:
+To build the sequences, call:
 
 ```bash
-python create_sequences.py
+PYTHONPATH=. python create_sequences.py
 ```
 
 This creates .pt files to be stored in data/processed_data/ for train, val, and test. Train and val follow a 90/10 split, and test is all of week 9's data.
@@ -92,9 +91,9 @@ Training progress can be seen in ```progress_outputs/```
 To observe a play, along with the model's predictions for that play, run:
 
 ```bash
-python src/create_animation.py
+PYTHONPATH=. python src/create_animation.py
 ```
 
 Check the args for this file. Ideally you can save the file as an mp4, but if not, then a .gif will be saved. Below is an example gif from a Giants vs. Cowboys game:
 
-![Alt text](gifs/sack_5.gif)
+![Alt text](gifs/2022091102-595.gif)

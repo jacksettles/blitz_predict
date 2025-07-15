@@ -220,7 +220,7 @@ def plot_play(play: Play) -> matplotlib.animation.FuncAnimation:
     play_frames = play.frames # List of PlayFrame objects
     num_frames = len(play_frames)
 
-    fig, ax = plt.subplots(figsize=(18, 9.5))
+    fig, ax = plt.subplots(figsize=(25, 13))
     create_field(ax,
                  offensive_team_name = off_name,
                  defensive_team_name = def_name,
