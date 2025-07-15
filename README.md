@@ -96,4 +96,4 @@ PYTHONPATH=. python src/create_animation.py
 
 Check the args for this file. Ideally you can save the file as an mp4, but if not, then a .gif will be saved. Below is an example gif from a Giants vs. Cowboys game:
 
-![Alt text](gifs/2022091102-595.gif)
+![Alt text](gifs/sack_5.gif)
