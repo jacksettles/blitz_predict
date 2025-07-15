@@ -210,9 +210,9 @@ def main():
         
     print(f"Saving to directory {save_dir}!")
     
-    torch.save(train, f"{save_dir}/train_2.pt")
-    torch.save(val, f"{save_dir}/val_2.pt")
-    torch.save(test, f"{save_dir}/test_2.pt")
+    torch.save(train, f"{save_dir}/train.pt")
+    torch.save(val, f"{save_dir}/val.pt")
+    torch.save(test, f"{save_dir}/test.pt")
 
 if __name__ == "__main__":
     main()
