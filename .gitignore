@@ -1,0 +1,3 @@
+data/nfldata.db
+data/processed_data/*.pt
+data/raw/*.csv

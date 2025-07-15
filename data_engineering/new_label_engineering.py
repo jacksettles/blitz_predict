@@ -7,7 +7,7 @@ def main():
     conn = sqlite3.connect("../data/nfldata.db")
     
     for i in tqdm(range(1, 10), total=9):
-        table = f"tr_week{i}"
+        table = f"tracking_week_{i}"
         print(f"Working on table: {table}")
         print()
         
