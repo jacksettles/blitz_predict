@@ -19,6 +19,7 @@ from typing import Optional
 from tqdm import tqdm
 
 from mamba_models import ModelArgs, Mamba
+from custom_models import BlitzLSTM
 from nfl_data import NFLDataset
 
 parser = argparse.ArgumentParser()
@@ -36,6 +37,7 @@ parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs
 parser.add_argument("--output_size", type=int, default=3, help="Number of classes. 3 for us: 0 = not blitzing, 1 = blitzing, 2 = on offense or the football")
 parser.add_argument("--schedule_free", type=int, default=1, help="0 if you want to use an optimizer with a cosine scheduler, 1 if you want to use schedulefree from Meta FAIR.")
 parser.add_argument("--break_value", type=int, default=5, help="Break training if model scores a worse eval metric this many times.")
+parser.add_argument("--model_type", type=str, default="mamba", choices=["mamba", "lstm"], help="Model architecture type")
 
 
 def ddp_setup():
@@ -90,7 +92,7 @@ class Trainer:
             "MODEL": self.model.module.to('cpu'),
             "EPOCHS_RUN": epoch,
         }
-        save_dir = "../saved_models"
+        save_dir = "./saved_models"
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         save_file = f"{save_dir}/{self.snapshot_path}.pt"
@@ -156,7 +158,7 @@ class Trainer:
         
     def _log_progress(self, epoch=None, avg_train_loss=None, avg_val_ce=None, lr=None, file_name=None):
         # Ensure the directory exists
-        directory = "../progress_outputs/"
+        directory = "./progress_outputs/"
         if not os.path.exists(directory):
             os.makedirs(directory)
         file_path = os.path.join(directory, f"{file_name}_progress_log.txt")
@@ -217,7 +219,7 @@ def lr_lambda(current_step: int, warmup_steps):
 def make_scheduler(optimizer, args, epoch_length):
     warmup_steps = int(epoch_length*0.05)
     warmup_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: lr_lambda(step, warmup_steps))
-    cosine_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=epoch_length*8, T_mult=2, eta_min=1e-9)
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=epoch_length*10, T_mult=2, eta_min=1e-9)
     scheduler = optim.lr_scheduler.SequentialLR(optimizer,
                                                 schedulers=[warmup_scheduler, cosine_scheduler],
                                                 milestones=[warmup_steps])
@@ -225,14 +227,18 @@ def make_scheduler(optimizer, args, epoch_length):
     
     
 def load_train_objects(args):
-    model_args = ModelArgs(d_model=args.d_model,
-                           n_layer=args.n_layer,
-                           vocab_size=args.output_size,
-                           d_state=args.d_state,
-                           pad_vocab_size_multiple=3 # 3 classes, so don't pad the 'vocab size' aka the classifier output
-                          )
-    
-    model = Mamba(model_args)
+    if args.model_type == "mamba":
+        model_args = ModelArgs(d_model=args.d_model,
+                               n_layer=args.n_layer,
+                               vocab_size=args.output_size,
+                               d_state=args.d_state,
+                               pad_vocab_size_multiple=3 # 3 classes, so don't pad the 'vocab size' aka the classifier output
+                              )
+
+        model = Mamba(model_args)
+    elif args.model_type == "lstm":
+        print("Using LSTM model!")
+        model = BlitzLSTM(num_layers=args.n_layer, feats_per_agent=9)
     
     train_data = NFLDataset(args.trainfile)
     val_data = NFLDataset(args.valfile)

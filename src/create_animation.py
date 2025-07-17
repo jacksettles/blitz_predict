@@ -18,14 +18,16 @@ from data_engineering.create_sequences import (
 import sys
 import torch
 from mamba_models import Mamba
+from custom_models import BlitzLSTM
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--model_path", type=str, default="saved_models/sched_free_model2.pt", help="Path to trained model")
+parser.add_argument("--model_path", type=str, default="saved_models/sched_free_model3.pt", help="Path to trained model")
 parser.add_argument("--week", type=int, default=1, help="Week number of tracking data to pull (1-9)")
+parser.add_argument("--gpid", type=str, help="If looking to animate a specific play, pass in the gameId-playId (gpid). Set random_play to False (0).")
 parser.add_argument("--random_play", type=int, default=1, help="Whether the play to animate is random or not. Defualt 1.")
 parser.add_argument("--event", type=str, help="If random_play is False, can specify an event type, like 'qb_sack'.")
-parser.add_argument("--save_as", type=str, default="mp4", help="Save clip as gif or mp4")
+parser.add_argument("--save_as", type=str, default="gif", help="Save clip as gif or mp4")
 
 conn = sqlite3.connect("./data/nfldata.db")
 
@@ -58,25 +60,29 @@ def read_table(week: int = 1):
     return df
 
 
-def get_gpid(df: pd.DataFrame, event: Optional[str]=None,
+def get_gpid(df: pd.DataFrame, gpid: Optional[str]=None, event: Optional[str]=None,
              player: Optional[str]=None, team: Optional[str]=None) -> str:
-    if (event != None) & (player != None) & (team != None):
-        filtered_df = df.loc[(df['event'] == event) & (df['club'] == team) & (df['displayName'] == player)]
-    elif (event != None) & (team != None):
-        filtered_df = df.loc[(df['event'] == event) & (df['club'] == team)]
-    elif (event != None) & (player != None):
-        filtered_df = df.loc[(df['event'] == event) & (df['displayName'] == player)]
-    elif (player != None) & (team != None):
-        filtered_df = df.loc[(df['displayName'] == player) & df['club'] == team]
-    elif (event != None):
-        filtered_df = df.loc[df['event'] == event]
-    elif (team != None):
-        filtered_df = df.loc[df['club'] == team]
-    elif (player != None):
-        filtered_df = df.loc[df['displayName'] == player]
+    if gpid:
+        filtered_df = df.loc[df["gpid"] == gpid]
+        print(f"Testing gpid: {gpid}")
     else:
-        print("Random choice gpid")
-        filtered_df = df
+        if (event != None) & (player != None) & (team != None):
+            filtered_df = df.loc[(df['event'] == event) & (df['club'] == team) & (df['displayName'] == player)]
+        elif (event != None) & (team != None):
+            filtered_df = df.loc[(df['event'] == event) & (df['club'] == team)]
+        elif (event != None) & (player != None):
+            filtered_df = df.loc[(df['event'] == event) & (df['displayName'] == player)]
+        elif (player != None) & (team != None):
+            filtered_df = df.loc[(df['displayName'] == player) & df['club'] == team]
+        elif (event != None):
+            filtered_df = df.loc[df['event'] == event]
+        elif (team != None):
+            filtered_df = df.loc[df['club'] == team]
+        elif (player != None):
+            filtered_df = df.loc[df['displayName'] == player]
+        else:
+            print("Random choice gpid")
+            filtered_df = df
     return np.random.choice(filtered_df['gpid'].unique())
 
 
@@ -121,7 +127,9 @@ def main(args):
         gpid = get_gpid(df)
         print(f"Pulling data for play gpid: {gpid}")
     else:
-        if args.event:
+        if args.gpid:
+            gpid = get_gpid(df, gpid=args.gpid)
+        elif args.event:
             gpid = get_gpid(df, event=args.event)
             print(f"Event type: {args.event}, pulling data for play gpid: {gpid}")
         
