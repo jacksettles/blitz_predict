@@ -1,0 +1,10 @@
+Epoch: 1, Train Avg. CE Loss: 0.2677948439352257, Val. Avg. CE Loss: 0.24201173105029886, Learning rate: 5e-05
+Epoch: 2, Train Avg. CE Loss: 0.2406741370136682, Val. Avg. CE Loss: 0.24156200118033358, Learning rate: 5e-05
+Epoch: 3, Train Avg. CE Loss: 0.24059937541821663, Val. Avg. CE Loss: 0.24147364944884758, Learning rate: 5e-05
+Epoch: 4, Train Avg. CE Loss: 0.24050261454355046, Val. Avg. CE Loss: 0.2416018572430101, Learning rate: 5e-05
+Epoch: 5, Train Avg. CE Loss: 0.2404592002356417, Val. Avg. CE Loss: 0.2415674721057072, Learning rate: 5e-05
+Epoch: 6, Train Avg. CE Loss: 0.2404258754847987, Val. Avg. CE Loss: 0.24151719405397057, Learning rate: 5e-05
+Epoch: 7, Train Avg. CE Loss: 0.24043398757856427, Val. Avg. CE Loss: 0.2415365774683033, Learning rate: 5e-05
+Epoch: 8, Train Avg. CE Loss: 0.24048032313907558, Val. Avg. CE Loss: 0.2415457616914418, Learning rate: 5e-05
+Epoch: 9, Train Avg. CE Loss: 0.24040776371866288, Val. Avg. CE Loss: 0.24155521822308304, Learning rate: 5e-05
+Epoch: 10, Train Avg. CE Loss: 0.24036731560570443, Val. Avg. CE Loss: 0.2415647490206796, Learning rate: 5e-05
