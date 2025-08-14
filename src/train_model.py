@@ -101,6 +101,7 @@ class Trainer:
         
     def _run_batch(self, batch):
         # batch shape [B, L, D] - targets shape [B, 23]
+        self.optimizer.zero_grad()
         features, targets = batch[0].to(self.device), batch[1].to(self.device).long()
 
         total_preds = targets.size(0) * targets.size(1) * targets.size(2)
