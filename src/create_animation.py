@@ -2,34 +2,41 @@ import sqlite3
 import argparse
 import pandas as pd
 import numpy as np
+import joblib
 from typing import List, Dict, Optional, Tuple, Set
 from typing_extensions import Self
 import matplotlib.pyplot as plt
+from matplotlib.animation import FFMpegWriter
 from animations.animation_classes import FrameObject, PlayFrame, Play
 from animations.animation_functions import plot_play
 from data_engineering.create_sequences import (
+    compute_seconds_remaining_in_half,
     remove_na_labels,
     impute_make_numeric,
-    impute_make_numeric,
     sort_df,
-    compute_football_dir_and_o_in_play,
+    standardize_left_to_right,
+    one_hot_encode_downs,
+    simple_scale,
     organize_play
 )
 import sys
 import torch
+import torch.nn.functional as F
 from mamba_models import Mamba
-from custom_models import BlitzLSTM
+from lstm_models import BlitzLSTM
+from transformer_models import BlitzFormer
+
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--model_path", type=str, default="saved_models/sched_free_model3.pt", help="Path to trained model")
-parser.add_argument("--week", type=int, default=1, help="Week number of tracking data to pull (1-9)")
+parser.add_argument("--model_path", type=str, default="saved_models/transformer_v1.pt", help="Path to trained model")
+parser.add_argument("--week", type=int, default=9, help="Week number of tracking data to pull (1-9)")
 parser.add_argument("--gpid", type=str, help="If looking to animate a specific play, pass in the gameId-playId (gpid). Set random_play to False (0).")
 parser.add_argument("--random_play", type=int, default=1, help="Whether the play to animate is random or not. Defualt 1.")
 parser.add_argument("--event", type=str, help="If random_play is False, can specify an event type, like 'qb_sack'.")
 parser.add_argument("--save_as", type=str, default="gif", help="Save clip as gif or mp4")
 
-conn = sqlite3.connect("./data/nfldata.db")
+conn = sqlite3.connect("/scratch/jts75596/fb/data/nfldata.db")
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -39,12 +46,31 @@ else:
     print("Cuda not available, using CPU")
 
 
-def load_model(model_path):
-    print(f"Using model from: {model_path}!")
-    model = torch.load(model_path, map_location=device, weights_only=False)['MODEL']
-    return model
+def load_model(path):
+    loc = "cuda:0"
+    snapshot = torch.load(path, map_location=loc)
+
+    model = BlitzFormer()
+    model.load_state_dict(snapshot["MODEL_STATE"])
+    return model.to(device)
+
+
+def read_pbp():
+    pbp_cols = "gameId, playId, quarter, down, yardsToGo, yardlineNumber, gameClock, preSnapHomeScore, preSnapVisitorScore"
+    pbp = pd.read_sql_query(f"SELECT {pbp_cols} FROM plays;", conn)
+    pbp['gpid'] = pbp['gameId'].astype(str) + "-" + pbp['playId'].astype(str)
+    pbp = pbp.drop(columns=['gameId', 'playId'])
+    pbp['score_diff'] = pbp['preSnapHomeScore'].astype(int) - pbp['preSnapVisitorScore'].astype(int)
+    pbp['down'] = pbp['down'].astype(int)
+    pbp['yardsToGo'] = pbp['yardsToGo'].astype(int)
+    pbp['quarter'] = pbp['quarter'].astype(int)
+    pbp = compute_seconds_remaining_in_half(pbp) #sec_left_half
+    pbp = pbp.set_index("gpid")
+    return pbp
 
 def read_table(week: int = 1):
+    pbp = read_pbp()
+    
     table = f"rush_labels_{week}"
     print(f"Reading in {table} from DB, could take about 5 minutes\n")
     df = pd.read_sql_query(f"SELECT * FROM {table};", conn)
@@ -57,6 +83,13 @@ def read_table(week: int = 1):
 
     print("Sorting DF...")
     df = sort_df(df)
+    
+    print("Standardizing left to right")
+    df = standardize_left_to_right(df)
+    
+    print("Joining play-by-play")
+    df = df.set_index("gpid").join(pbp).reset_index()
+    df['Is_ball'] = (df['displayName'] == 'football').astype(int)
     return df
 
 
@@ -86,33 +119,37 @@ def get_gpid(df: pd.DataFrame, gpid: Optional[str]=None, event: Optional[str]=No
     return np.random.choice(filtered_df['gpid'].unique())
 
 
-def construct_play(play_df: pd.DataFrame, gpid: str, predictions: torch.Tensor):
+def construct_play(play_df: pd.DataFrame,
+                   gpid: str,
+                   predictions: torch.Tensor,
+                   f_start: int,
+                   f_end: int):
     play_length = play_df['frameId'].max()
     frames = []
     offensive_team = play_df.loc[play_df['on_offense'] == 1, 'club'].iloc[0]
     defensive_team = play_df.loc[play_df['on_offense'] == 0, 'club'].iloc[0]
-    
-    num_pred_frames = predictions.size(0)
-    
-    for i in range(play_length):
-        if i < num_pred_frames:
-            frame_predictions = predictions[i]
+        
+    pred_idx = 0
+    for i in range(1, play_length+1):
+        if (i >= f_start) & (i <= f_end):
+            frame_predictions = predictions[pred_idx]
+            pred_idx += 1
         points = []
-        play_frame_df = play_df.query(f"frameId == {i+1}")
+        play_frame_df = play_df[play_df["frameId"] == i]
         idx = 0
         for j, row in play_frame_df.iterrows():
             name = row['displayName']
             x = row['x']
             y = row['y']
             on_offense = row['on_offense']
-            if i < num_pred_frames:
-                blitz = frame_predictions[idx].item()
+            if (i >= f_start) & (i <= f_end) & (on_offense == 0):
+                blitz_probs = frame_predictions[idx].item()
+                idx += 1
             else:
-                blitz = 0
-            player = FrameObject(name, x, y, on_offense=on_offense, is_blitzing=blitz)
+                blitz_probs = 0
+            player = FrameObject(name, x, y, on_offense=on_offense, blitz_probs=blitz_probs)
             points.append(player)
-            idx += 1
-        pf_name = f"{gpid}-{i+1}"
+        pf_name = f"{gpid}-{i}"
         frame = PlayFrame(pf_name, points)
         frames.append(frame)
     play = Play(gpid=gpid, frames=frames, off_team=offensive_team, def_team=defensive_team)
@@ -121,7 +158,13 @@ def construct_play(play_df: pd.DataFrame, gpid: str, predictions: torch.Tensor):
 
 def main(args):
     model = load_model(args.model_path)
+    model.eval()
     df = read_table(args.week)
+    
+    scaler = joblib.load("data_engineering/scaler.pkl")
+    scale_cols = ['s', 'a', 'dis', 'yardsToGo', 'score_diff']
+    df[scale_cols] = scaler.transform(df[scale_cols])
+    df = one_hot_encode_downs(df)
     
     if args.random_play == 1:
         gpid = get_gpid(df)
@@ -134,29 +177,40 @@ def main(args):
             print(f"Event type: {args.event}, pulling data for play gpid: {gpid}")
         
     play_df = df[df["gpid"] == gpid].copy()
-    play_df = compute_football_dir_and_o_in_play(play_df)
-    
+
+    start_frame = play_df.loc[play_df['event'] == 'line_set', 'frameId'].unique()[0]
+    start_frame = max(0, start_frame - 15)
     snap_frame = play_df.loc[play_df["frameType"] == "SNAP", "frameId"].unique()[0]
-    play_df_for_features = play_df[play_df['frameId'] <= (snap_frame + 15)].copy()
+    play_df_for_features = play_df[(play_df['frameId'] >= start_frame) & (play_df['frameId'] <= snap_frame)].copy()
+    play_df_for_features = simple_scale(play_df_for_features)
+    play_df_for_features = play_df_for_features[play_df_for_features['Is_ball'] == 0]
     
-    features, labels = organize_play(play_df_for_features)
+    tracking_feats, play_feats, labels = organize_play(play_df_for_features, model_type="transformer")
     play_df.loc[play_df["displayName"] == "football", "on_offense"] = -1
     
-    features = features.unsqueeze(0).to(device)
+    tracking_feats = tracking_feats.unsqueeze(0).to(device)
+    play_feats = play_feats.unsqueeze(0).to(device)
+    
 
     with torch.no_grad():
-        outputs = model(features) # shape [1, num_frames, 23, 3]
-    predictions = torch.argmax(outputs, dim=-1) # shape [1, num_frames, 23]
-    preds = predictions.squeeze(0) # shape [num_frames, 23]
+        outputs = model(tracking_feats, play_feats) # shape: [1, S, 22, 2]
+        outputs = outputs[:, :, :11, :]
+    predictions = F.softmax(outputs, dim=-1)[..., 1]
+    preds = predictions.squeeze(0) 
 
-    play = construct_play(play_df, gpid, preds)
+    play = construct_play(play_df,
+                          gpid,
+                          preds,
+                          f_start=start_frame,
+                          f_end=snap_frame)
     
     animation = plot_play(play)
 
     if args.save_as == "gif":
-        animation.save(f"{gpid}.gif", writer='pillow', fps=15)
+        animation.save(f"{gpid}.gif", dpi=100, writer='pillow', fps=10)
     elif args.save_as == "mp4":
-        animation.save(f"{gpid}.mp4", writer='ffmpeg', fps=15)
+        writer = FFMpegWriter(fps=10, bitrate=1800)
+        animation.save(f"{gpid}.mp4", writer=writer, dpi=100)
 
     
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 from matplotlib.animation import FuncAnimation
 import matplotlib.patches as patches
 from typing import List, Dict, Optional, Tuple, Set
 from typing_extensions import Self
-from .animation_classes import FrameObject, PlayFrame, Play
+from .animation_classes import FrameObject, PlayFrame, Play, _AnimArtists
+import numpy as np
 
 
 '''Color Constants'''
@@ -82,6 +84,74 @@ team_colors = {'BUF': BASIC_BLUE,
                'DEN': BRONCOS_ORANGE,
                'SEA': COLLEGE_NAVY}
 
+ARTISTS = _AnimArtists()
+
+def init_animation(ax: matplotlib.axes._axes.Axes,
+                   offensive_team_name: str,
+                   defensive_team_name: str,
+                   n_offense: int,
+                   n_defense: int):
+    """
+    Create the three scatter artists once and mark them animated for blitting.
+    Call this before FuncAnimation starts.
+    """
+    # Empty but valid offsets
+    off_xy  = np.zeros((n_offense, 2), dtype=float)
+    def_xy  = np.zeros((n_defense, 2), dtype=float)
+    ball_xy = np.zeros((1, 2), dtype=float)
+
+    ARTISTS.off_scatter = ax.scatter(off_xy[:,0], off_xy[:,1],
+                                     s=100, marker='o',
+                                     animated=True, zorder=2,
+                                     label=offensive_team_name)
+    ARTISTS.def_scatter = ax.scatter(def_xy[:,0], def_xy[:,1],
+                                     s=100, marker='o',
+                                     animated=True, zorder=2,
+                                     label=defensive_team_name)
+    ARTISTS.ball_scatter = ax.scatter(ball_xy[:,0], ball_xy[:,1],
+                                      s=100, marker='H',
+                                      animated=True, zorder=2,
+                                      label="football")
+    
+    base_def = team_colors[defensive_team_name]
+    base_rgba = to_rgba(base_def, 1.0)                        # (r,g,b,1)
+    ARTISTS.def_face_rgba = np.tile(base_rgba, (n_defense, 1))  # shape (11, 4)
+    ARTISTS.def_scatter.set_facecolors(ARTISTS.def_face_rgba)
+
+    base_off = team_colors[offensive_team_name]
+    ARTISTS.off_scatter.set_facecolors([to_rgba(base_off, 1.0)])
+    ARTISTS.ball_scatter.set_facecolors(FOOTBALL_COLOR)
+
+    # 1) Probability text centered on the dot
+    ARTISTS.def_prob_texts = []
+    for _ in range(n_defense):
+        t = ax.text(0, 0, "", ha='center', va='center',
+                    fontsize=8, weight='bold', zorder=3, c='w',
+#                     bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.7),
+                    animated=True)
+        ARTISTS.def_prob_texts.append(t)
+
+    # 2) Name label slightly above the dot (using annotate for offset in points)
+    ARTISTS.def_name_annos = []
+    for _ in range(n_defense):
+        t = ax.text(
+            0, 0, "", ha='center', va='bottom',
+            fontsize=5, color='black', zorder=3,
+            bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.6),
+            animated=True
+        )
+        ARTISTS.def_name_annos.append(t)
+
+    # Optional small speedups
+    ARTISTS.off_scatter.set_antialiased(False)
+    ARTISTS.def_scatter.set_antialiased(False)
+    ARTISTS.ball_scatter.set_antialiased(False)
+
+    # Return the artists so init_func can use them if you want
+    return [ARTISTS.off_scatter, ARTISTS.def_scatter,
+            ARTISTS.ball_scatter, *ARTISTS.def_prob_texts,
+            *ARTISTS.def_name_annos]
+
 
 def create_field(ax: matplotlib.axes._axes.Axes,
                  offensive_team_name: str = None,
@@ -117,90 +187,99 @@ def create_field(ax: matplotlib.axes._axes.Axes,
         ax.plot([x, x], [29.66, 30.33], color= WHITE, zorder=1)
 
     # hide axis
-    plt.axis('off')
+    ax.set_axis_off()
 
     off_color = team_colors[offensive_team_name]
-    def_color = team_colors[defensive_team_name] + "80"
+    def_color = team_colors[defensive_team_name]
 
     # create base scatter plots for the players location, allows for legend creation
     ax.scatter([], [], c= off_color, label = offensive_team_name, zorder=2)
     ax.scatter([], [], c= def_color, label = defensive_team_name, zorder=2)
     ax.scatter([], [], c= FOOTBALL_COLOR , label = ball_name, zorder=2)
     ax.legend(loc='upper right')
-
-    # statistics overview tables
-    # plt.table(cellText=data,
-    #                 colWidths=[0.1]*4,
-    #                 colLabels=list(stat_overview.columns),
-    #                 loc='right',
-    #                 )
-    # plt.table(cellText=data2,
-    #                 colWidths=[0.1]*2,
-    #                 colLabels=list(percentile_cal.columns),
-    #                 loc='bottom')
-
-    # initial plots for jersey numbers
-    # for x in range(0, 14):
-    #     d["label{0}".format(x)] = ax.text(0, 0, '', fontsize = 'small', fontweight = 700, zorder=4)
-
-    # plot legend
-    ax.legend(loc='upper right')
+    
+    
+def _alpha(prob: float,
+           min_alpha: float = 0.25,   # visibility floor for defenders
+           max_alpha: float = 1.0,) -> float:
+        prob = max(0.0, min(1.0, float(prob)))
+        return min_alpha + (max_alpha - min_alpha) * prob
     
     
 def update(frame: int,
            play_frames: list[PlayFrame] = None,
            offensive_team_name: str = None,
            defensive_team_name: str = None,
-           ax: matplotlib.axes._axes.Axes = None) -> List[matplotlib.collections.PathCollection]:
+           ax: matplotlib.axes._axes.Axes = None,
+           *,
+           show_labels: bool=True) -> List[matplotlib.collections.PathCollection]:
     # pass in the list of PlayFrame objects.
     # Each PlayFrame object has a list of FrameObject objects.
     # Each of those FrameObject objects is a player or ball with coords.
-#     print(f"Frame: {frame}")
+    print(f"Going through the update function at frame: {frame}")
     current_frame = play_frames[frame]
     
-    offense_xs = [player.x for player in current_frame.points if player.on_offense == 1]
-    offense_ys = [player.y for player in current_frame.points if player.on_offense == 1]
-#     defense_xs = [player.x for player in current_frame.points if player.on_offense == 0]
-#     defense_ys = [player.y for player in current_frame.points if player.on_offense == 0]
-    no_blitz_xs = [player.x for player in current_frame.points if player.on_offense == 0 and player.is_blitzing == 0]
-    no_blitz_ys = [player.y for player in current_frame.points if player.on_offense == 0 and player.is_blitzing == 0]
-    blitz_xs = [player.x for player in current_frame.points if player.on_offense == 0 and player.is_blitzing == 1]
-    blitz_ys = [player.y for player in current_frame.points if player.on_offense == 0 and player.is_blitzing == 1]
-    ball_xs = [player.x for player in current_frame.points if player.on_offense == -1]
-    ball_ys = [player.y for player in current_frame.points if player.on_offense == -1]
+    offense = [p for p in current_frame.points if p.on_offense == 1]
+    defense = [p for p in current_frame.points if p.on_offense == 0]
+    ball    = [p for p in current_frame.points if p.on_offense == -1]
+
+    offense_xs = [p.x for p in offense]
+    offense_ys = [p.y for p in offense]
+
+    defense_xs = [p.x for p in defense]
+    defense_ys = [p.y for p in defense]
+
+    ball_xs = [p.x for p in ball]
+    ball_ys = [p.y for p in ball]
 
     off_color = team_colors[offensive_team_name]
-    no_blitz_color = team_colors[defensive_team_name] + "80"
-    blitz_color = team_colors[defensive_team_name]
+    def_color = team_colors[defensive_team_name]
 
-    ax.clear()
-    create_field(ax,
-                 offensive_team_name = offensive_team_name,
-                 defensive_team_name = defensive_team_name,
-                 ball_name = "football")
+    # Build Nx2 arrays once per frame (no Python loop for set_* calls)
+    off_xy = np.column_stack([offense_xs, offense_ys])  # shape (N_off, 2)
+    def_xy = np.column_stack([defense_xs, defense_ys])  # shape (N_def, 2)
+    ball_xy = np.column_stack([ball_xs,   ball_ys])     # shape (1, 2)
 
-    artists_to_redraw = []
+    # Update positions (fast path)
+    ARTISTS.off_scatter.set_offsets(off_xy)
+    ARTISTS.def_scatter.set_offsets(def_xy)
+    ARTISTS.ball_scatter.set_offsets(ball_xy)
 
-    # visualize plots
-    offense_plot = ax.scatter(offense_xs, offense_ys, s=100, linestyle='None', marker='o',
-                          c= off_color, label=offensive_team_name, zorder=2)
-
-#     defense_plot = ax.scatter(defense_xs, defense_ys, linestyle='None', marker='o',
-#                           c= def_color, label=defensive_team_name, zorder=2)
-    no_blitz_plot = ax.scatter(no_blitz_xs, no_blitz_ys, s=100, linestyle='None', marker='o',
-                          c= no_blitz_color, label=defensive_team_name, zorder=2)
+    probs  = np.fromiter((getattr(p, "blitz_probs", 0.0) for p in defense),
+                     dtype=float, count=len(defense))
+    alphas = 0.25 + 0.75 * np.clip(probs, 0.0, 1.0)
+    ARTISTS.def_face_rgba[:, 3] = alphas
+    ARTISTS.def_scatter.set_facecolors(ARTISTS.def_face_rgba)
+        
+    artists_to_redraw = [ARTISTS.off_scatter,
+                         ARTISTS.def_scatter,
+                         ARTISTS.ball_scatter]
     
-    blitz_plot = ax.scatter(blitz_xs, blitz_ys, s=100, linestyle='None', marker='X',
-                          c= blitz_color, label="blitz", zorder=2)
+    if show_labels:
+        # Update label text/positions without creating new artists
+        # Ensure 1-to-1 mapping: defender index i ↔ label index i
+        for i, p in enumerate(defense):
+            prob = getattr(p, "blitz_probs", 0.0)
+            name = getattr(p, "name", "DEF")
 
-    ball_plot = ax.scatter(ball_xs, ball_ys, s=100, linestyle='None', marker='H',
-                         c= FOOTBALL_COLOR, label="football", zorder=2)
+            # Move + update probability text
+            prob_text = ARTISTS.def_prob_texts[i]
+            prob_text.set_position((p.x, p.y))
+            prob_text.set_text(f"{prob:.2f}")
 
-    artists_to_redraw.append(offense_plot)
-#     artists_to_redraw.append(defense_plot)
-    artists_to_redraw.append(no_blitz_plot)
-    artists_to_redraw.append(blitz_plot)
-    artists_to_redraw.append(ball_plot)
+            # Move + update name annotation (xy is the anchor)
+            name_anno = ARTISTS.def_name_annos[i]
+            name_anno.set_position((p.x, p.y+1))   # for Annotation, call set_position for xy
+#             name_anno.xy = (p.x, p.y)
+            # Matplotlib’s Annotation wants .set_text(...) for content
+            name_anno.set_text(name)
+
+        # If you want to throttle label updates (optional):
+        # if frame % 2 != 0:
+        #     pass  # skip adding label artists to the redraw list this frame
+
+        artists_to_redraw.extend(ARTISTS.def_prob_texts)
+        artists_to_redraw.extend(ARTISTS.def_name_annos)
 
     return artists_to_redraw
 
@@ -219,22 +298,40 @@ def plot_play(play: Play) -> matplotlib.animation.FuncAnimation:
 
     play_frames = play.frames # List of PlayFrame objects
     num_frames = len(play_frames)
-
+    print(num_frames)
+    
     fig, ax = plt.subplots(figsize=(16, 10))
     create_field(ax,
                  offensive_team_name = off_name,
                  defensive_team_name = def_name,
                  ball_name = ball_name
                 )
+    # Fix axes once so autoscale doesn't run every frame
+    ax.set_xlim(0, 120)
+    ax.set_ylim(0, 53.3)
+    ax.set_aspect('equal', adjustable='box')
+    
+    print("Initializing the animation")
+    init_artists = init_animation(ax, off_name, def_name,
+                                  n_offense=11, n_defense=11)
 
+    def _init():
+        # Return the artists so blitting knows what to draw initially
+        return init_artists
     
     farg_tuple = (play_frames, off_name, def_name, ax)
     
-    animation = FuncAnimation(fig, update, interval=125, repeat=True,
-                            frames=range(0, num_frames), fargs=farg_tuple,
-                            blit=True)
+    print("Creating animation")
+    animation = FuncAnimation(fig, update,
+                          frames=range(0, num_frames),
+                          fargs=farg_tuple,
+                          init_func=_init,
+                          blit=True,
+                          interval=125,
+                          repeat=False,
+                          cache_frame_data=False,
+                          )
 
     plt.subplots_adjust(top=0.8)
     plt.subplots_adjust(right=0.7)
-#     plt.show()
     return animation

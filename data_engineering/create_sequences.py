@@ -8,12 +8,19 @@ import sys
 import os
 import random
 from typing import Dict, Tuple
+from sklearn.preprocessing import StandardScaler
+import joblib
+import argparse
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--model_type", required=True, type=str, choices=["mamba", "transformer"], help="What model you are processing this data for")
 
 def remove_na_labels(df: pd.DataFrame) -> pd.DataFrame:
     mask = (df['on_offense'] == 0) & (df['displayName'] != 'football') # Defenders only, no offense and no football
     def_only_df = df[mask]
     null_rush = def_only_df[def_only_df['is_rushing'].isna()]
-    na_rush = def_only_df.query("is_rushing == 'NA'")
+    na_rush = def_only_df[def_only_df['is_rushing'] == 'NA']
     discard_plays = null_rush['gpid'].unique().tolist() + na_rush['gpid'].unique().tolist()
     print(f"Number of discard plays because defense does not have a label: {len(discard_plays)}")
     df = df[~df['gpid'].isin(discard_plays)]
@@ -48,8 +55,10 @@ def impute_make_numeric(df: pd.DataFrame) -> pd.DataFrame:
         lambda col: pd.to_numeric(col, errors='coerce')
     )
     df[float_cols] = df[float_cols].astype(float)
-    df[int_cols] = df[int_cols].fillna(-1).astype(int) # these '-1' values should be the football only
-    df[label_col] = df[label_col].fillna(2).astype(int) # these '2' labels should be football and offensive players only
+    df[int_cols] = df[int_cols].fillna(-1).astype(int)  # these '-1' values should be the football only
+    df[label_col] = df[label_col].fillna(0).astype(int) # these '0' labels should be football and offensive players only
+                                                        # they get masked out anyways during loss computation, so these 
+                                                        # parameters just don't get updated
     print(f"Number of unique plays: {df['gpid'].nunique()}")
     return df
 
@@ -90,80 +99,111 @@ def compute_football_dir_and_o_in_play(play_df):
     return play_df
 
 
-def organize_play(df: pd.DataFrame) -> pd.DataFrame:
-    feat_cols = ['x','y','s','a','dis', 'sin_o', 'cos_o', 'sin_dir', 'cos_dir']
-    label_col = 'is_rushing'
+def standardize_left_to_right(df: pd.DataFrame):
     df = df.copy()
+    mask = df["playDirection"] == 'left'  # only flip right-to-left plays
     
+    # Flip coordinates
+    df.loc[mask, "x"] = 120 - df.loc[mask, "x"]
+    df.loc[mask, "y"] = 53.3 - df.loc[mask, "y"]
+    
+    # Flip orientation and direction
+    for col in ["o", "dir"]:
+        df.loc[mask, col] = (180 - df.loc[mask, col]) % 360
+    return df
+
+
+def compute_seconds_remaining_in_half(df):
+    out = df.copy()
+
+    # split into minutes and seconds
+    mins_secs = out['gameClock'].str.split(':', expand=True)
+    mins = mins_secs[0].astype(int)
+    secs = mins_secs[1].astype(int)
+
+    # total seconds left in quarter
+    sec_left_qtr = mins * 60 + secs
+
+    # add 15 minutes if it's 1st or 3rd quarter
+    out['sec_left_half'] = sec_left_qtr + np.where(out['quarter'].isin([1, 3]), 15*60, 0)
+
+    return out
+
+
+def one_hot_encode_downs(df: pd.DataFrame):
+    downs = pd.get_dummies(df['down'], prefix='down').astype(int)
+    df = pd.concat([df.drop('down', axis=1), downs], axis=1)
+    return df
+
+
+def simple_scale(df: pd.DataFrame):
+    """
+    Scaling these columns is really simple.
+    """
+    df.copy()
     df['x'] = df['x'] / 120.0
     df['y'] = df['y'] / 53.3
-    df['s'] = df['s'] / 9.99 # observed max speed in total dataset, players only
-    df['a'] = df['a'] / 9.99 # observed max acceleration in total dataset, players only
-    df['dis'] = df['dis'] / 6.29 # observed max displacement in total dataset, players only
-    
+    df['sec_left_half'] = df['sec_left_half'] / 1800.0 
     df['sin_o'] = np.sin(np.deg2rad(df['o']))      # orientation
     df['cos_o'] = np.cos(np.deg2rad(df['o']))
-
     df['sin_dir'] = np.sin(np.deg2rad(df['dir']))  # direction of motion
     df['cos_dir'] = np.cos(np.deg2rad(df['dir']))
+    return df
+
+
+def organize_play(df: pd.DataFrame, model_type="mamba") -> pd.DataFrame:
+    """
+    df here is an individual play's df, after grouping by 'gpid'.
+    """
+    tracking_feat_cols = ['x','y','s','a','dis', 'sin_o', 'cos_o', 'sin_dir', 'cos_dir']
+    play_feat_cols = ['down_1', 'down_2', 'down_3', 'down_4', 'sec_left_half', 'yardsToGo' ,'score_diff']
+    label_col = 'is_rushing'
+    df = df.copy()
+    play_feats = df[play_feat_cols].drop_duplicates().values # array
     
-    feats = torch.tensor(df[feat_cols].values, dtype=torch.float32)
+    tracking_feats = torch.tensor(df[tracking_feat_cols].values, dtype=torch.float32)
+    play_feats = torch.tensor(play_feats, dtype=torch.float32)   # tensor
     labels = torch.tensor(df[label_col].values, dtype=torch.float32)
 
-    seq_len = df['frameId'].nunique()
+    if model_type == "mamba":
+        seq_len = df['frameId'].nunique()
+        tracking_feats = tracking_feats.reshape(seq_len, 22 * len(tracking_feat_cols))
+        labels = labels.reshape(seq_len, -1)
+    elif model_type == "transformer":
+        seq_len = df['frameId'].nunique() * 22
+        tracking_feats = tracking_feats.reshape(seq_len, len(tracking_feat_cols))
+        labels = labels.reshape(seq_len)
 
-    feats = feats.reshape(seq_len, 23 * len(feat_cols))
-    labels = labels.reshape(seq_len, -1)
-    return feats, labels
+    return tracking_feats, play_feats, labels
 
 
-def split_dataset(data_dict, train_ratio=0.9, seed=42):
-    """
-    This function splits the dictionary of data up into train, val, and test sets.
-    
-    Args:
-        data_dict (Dict[str, Dict[str, Tuple[torch.Tensor, torch.Tensor]]]):
-            This input dictionary should contain 9 entries, 1 for each of the 9 weeks from
-            the NGS tracking data. Each of the values associated with these 9 keys should be
-            a dictionary itself. The keys in that dictionary are "gpid" strings: 'gameId-playId'.
-            The values for those entries should be tuples of torch.Tensor objects. The first tensor
-            is a feature tensor in the shape of [num_frames, feats_per_player*23]. The second tensor
-            in that tuple is a label tensor in the shape of [num_frames, 23].
-        
-    Returns:
-        Tuple containing:
-            - train_set (Dict[str, Dict[str, Tuple[Tensor, Tensor]]])
-            - val_set (Dict[str, Dict[str, Tuple[Tensor, Tensor]]])
-            - test_set (Dict[str, Dict[str, Tuple[Tensor, Tensor]]])
-    """
-    random.seed(seed)
-    
-    keys = sorted(data_dict.keys())  # consistent ordering
-    assert len(keys) >= 9, "Expected at least 9 groups"
-
-    train_set = {}
-    val_set = {}
-
-    # Use only the first 8 groups for train/val
-    for group_key in keys[:8]:
-        group_data = list(data_dict[group_key].items())
-        random.shuffle(group_data)
-
-        split_idx = int(len(group_data) * train_ratio)
-        train_set[group_key] = dict(group_data[:split_idx])
-        val_set[group_key] = dict(group_data[split_idx:])
-
-    # Group 9 is the test set
-    test_key = keys[8]
-    test_set = {test_key: data_dict[test_key]}
-
-    return train_set, val_set, test_set
+def make_datasets(df: pd.DataFrame, model_type="mamba"):
+    tuple_list = []
+    for gpid, play_df in df.groupby('gpid'):
+        tensor_tuple = organize_play(play_df, model_type=model_type)
+        for tens in tensor_tuple:
+            if torch.isnan(tens).any():
+                print(f"Skipping play {gpid}, found nans in tensors")
+                continue
+        tuple_list.append(tensor_tuple)
+    return tuple_list
     
 
-def main():
+def main(args):
     conn = sqlite3.connect("/scratch/jts75596/fb/data/nfldata.db")
+    
+    pbp_cols = "gameId, playId, quarter, down, yardsToGo, yardlineNumber, gameClock, preSnapHomeScore, preSnapVisitorScore"
+    pbp = pd.read_sql_query(f"SELECT {pbp_cols} FROM plays;", conn)
+    pbp['gpid'] = pbp['gameId'].astype(str) + "-" + pbp['playId'].astype(str)
+    pbp = pbp.drop(columns=['gameId', 'playId'])
+    pbp['score_diff'] = pbp['preSnapHomeScore'].astype(int) - pbp['preSnapVisitorScore'].astype(int)
+    pbp['down'] = pbp['down'].astype(int)
+    pbp['yardsToGo'] = pbp['yardsToGo'].astype(int)
+    pbp['quarter'] = pbp['quarter'].astype(int)
+    pbp = compute_seconds_remaining_in_half(pbp) #sec_left_half
+    pbp = pbp.set_index("gpid")
 
-    week_dict = {}
+    play_df_list = []
     for i in tqdm(range(1, 10), total=9, desc="Week iteration"):
         table = f"rush_labels_{i}"
         print(f"Reading in {table} from DB, could take about 5 minutes\n")
@@ -177,33 +217,72 @@ def main():
 
         print("Sorting DF...")
         df = sort_df(df)
+        df = standardize_left_to_right(df)
+        df = df.set_index("gpid").join(pbp).reset_index()
+        
+        # Binary variable for identifying the ball easily
+        df['Is_ball'] = (df['displayName'] == 'football').astype(int)
 
         grouped_plays = df.groupby('gpid', sort=False)
 
-        play_dict = {}
         print("Iterating over plays individually to organize them...")
 
         for gpid, play_df in tqdm(grouped_plays, total=len(grouped_plays)):
             try:
-                play_df = compute_football_dir_and_o_in_play(play_df)
-
-                snap_frame = play_df.loc[play_df["frameType"] == "SNAP", "frameId"].unique()[0]
-                play_df = play_df[play_df['frameId'] <= (snap_frame + 15)]
-
-                features, labels = organize_play(play_df)
+                play_df = play_df[play_df['Is_ball'] == 0]
+                start_frame = play_df.loc[play_df['event'] == 'line_set', 'frameId'].unique()[0]
+                start_frame = max(0, start_frame - 15)
+                snap_frame = play_df.loc[play_df['frameType'] == 'SNAP', 'frameId'].unique()[0]
+                play_df = play_df[(play_df['frameId'] >= start_frame) & (play_df['frameId'] <= snap_frame)]
+                play_df_list.append(play_df)
             except Exception as e:
                 print(f"GPID: {gpid} - {e}")
                 continue
-            if torch.isnan(features).any() or torch.isnan(labels).any():
-                print(f"Found missing values in features or labels, not adding to dataset, check play {gpid}")
-                continue
-            play_dict[gpid] = (features, labels)
-        week_dict[f"week_{i}"] = play_dict
     
     # Do train-val-test split
-    train, val, test = split_dataset(week_dict)
+    random.seed(42)
+    split_idx = int(len(play_df_list) * 0.8)   # splitting 80% off for train
+    random.shuffle(play_df_list)
+    train_list = play_df_list[:split_idx]
+    temp = play_df_list[split_idx:]
+    split_idx = int(len(temp) * 0.5)           # splitting 50% of the remaining 20% for val and test
+    val_list = temp[:split_idx]
+    test_list = temp[split_idx:]
     
-    save_dir = "../data/processed_data"
+    train_df = pd.concat(train_list, axis=0)
+    val_df = pd.concat(val_list, axis=0)
+    test_df = pd.concat(test_list, axis=0)
+    
+    # Standard scale cols
+    scaler = StandardScaler()
+    scale_cols = ['s', 'a', 'dis', 'yardsToGo', 'score_diff']
+    scaler.fit(train_df[scale_cols])
+    joblib.dump(scaler, "scaler.pkl")
+    
+    train_df[scale_cols] = scaler.transform(train_df[scale_cols])
+    val_df[scale_cols] = scaler.transform(val_df[scale_cols])
+    test_df[scale_cols] = scaler.transform(test_df[scale_cols])
+    
+    # One-hot encode downs
+    train_df = one_hot_encode_downs(train_df)
+    val_df = one_hot_encode_downs(val_df)
+    test_df = one_hot_encode_downs(test_df)
+    
+    # Scale out of the max value
+    train_df = simple_scale(train_df)
+    val_df = simple_scale(val_df)
+    test_df = simple_scale(test_df)
+    
+    # Returns a list of tuples of tensors (tracking_features, play_features, labels)
+    train = make_datasets(train_df, model_type=args.model_type)
+    val = make_datasets(val_df, model_type=args.model_type)
+    test = make_datasets(test_df, model_type=args.model_type)
+    
+    print(f"# train plays: {len(train)}")
+    print(f"# val plays: {len(val)}")
+    print(f"# test plays: {len(test)}")
+    
+    save_dir = f"../data/processed_data/{args.model_type}"
     if not os.path.exists(save_dir):
         print(f"Making save directory {save_dir}!")
         os.makedirs(save_dir)
@@ -215,4 +294,5 @@ def main():
     torch.save(test, f"{save_dir}/test.pt")
 
 if __name__ == "__main__":
-    main()
+    args = parser.parse_args()
+    main(args)

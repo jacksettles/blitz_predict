@@ -1,15 +1,18 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Set
 from typing_extensions import Self
+import matplotlib
+from matplotlib.text import Text, Annotation
+import numpy as np
 
 @dataclass(frozen=True)
 class FrameObject:  # 1 Kib +
     """Represents the x,y from ball/player in raw dataframe."""
-    id: Optional[str]  # ball would be `None`
+    name: Optional[str]  # ball would be `None`
     x: int
     y: int
     on_offense: int
-    is_blitzing: int
+    blitz_probs: int
         
         
 @dataclass
@@ -28,3 +31,14 @@ class Play:
     frames: List[PlayFrame] = field(default_factory=list)
     off_team: str = ""
     def_team: str = ""
+        
+        
+@dataclass
+class _AnimArtists:
+    off_scatter: matplotlib.collections.PathCollection | None = None
+    def_scatter: matplotlib.collections.PathCollection | None = None
+    ball_scatter: matplotlib.collections.PathCollection | None = None
+    def_prob_texts: list[Text] = field(default_factory=list)
+    def_name_annos: list[Text] = field(default_factory=list)
+    def_face_rgba: np.ndarray | None = None
+        

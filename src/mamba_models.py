@@ -51,50 +51,67 @@ class ModelArgs:
         if self.vocab_size % self.pad_vocab_size_multiple != 0:
             self.vocab_size += (self.pad_vocab_size_multiple
                                 - self.vocab_size % self.pad_vocab_size_multiple)
+            
+            
+class PlayMetadataMLP(nn.Module):
+    def __init__(self, input_dim=7, output_dim=1024, gelu=True, dropout=0.1):
+        super().__init__()
+        if gelu:
+            self.act_fn = nn.GELU()
+        else:
+            self.act_fn = nn.ReLU()
+            
+        self.dropout = dropout
+        self.mlp = torch.nn.Sequential(
+            nn.Linear(input_dim, 3072),
+            self.act_fn,
+            nn.Dropout(p=self.dropout),
+            nn.Linear(3072, output_dim),
+            nn.LayerNorm(output_dim)
+        )
+        self.output_dim = output_dim
+        
+    def forward(self, meta):
+        out = self.mlp(meta)
+        return out
 
 
 class Mamba(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, gelu=False):
         """Full Mamba model."""
         super().__init__()
         self.args = args
         
-#         self.embedding = nn.Embedding(args.vocab_size, args.d_model)
         self.layers = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
         self.norm_f = RMSNorm(args.d_model)
-
-        self.blitz_head = nn.Linear(args.d_model, 23*args.vocab_size, bias=False)
-        
-#         self.lm_head.weight = self.embedding.weight  # Tie output projection to embedding weights.
-                                                     # See "Weight Tying" paper
+#         self.play_encoder = PlayMetadataMLP(input_dim=7, output_dim=args.d_model, gelu=gelu)
+        self.blitz_head = nn.Linear(args.d_model*1, 22*args.vocab_size, bias=False)
 
 
-    def forward(self, x):
+    def forward(self, x, play_features):
         """
         Args:
-            x (long tensor): shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
+            x (torch.Tensor): shape (b, l, d)    (See Glossary at top for definitions of b, l, d_in, n...)
+            play_features (torch.Tensor): shape (b, 7) down_1, down_2, down_3, down_4, sec_left_half, yardsToGo, score_diff
     
         Returns:
-            logits: shape (b, l, vocab_size)
+            logits: [B, S, 22, vocab_size]
 
         Official Implementation:
             class MambaLMHeadModel, https://github.com/state-spaces/mamba/blob/main/mamba_ssm/models/mixer_seq_simple.py#L173
 
         """
-#         print(f"Initial input shape: {input_ids.shape}")
-#         x = self.embedding(input_ids)
-#         print(f"x shape after getting embeddings: {x.shape}")
+#         encoded_play_features = self.play_encoder(play_features)
+
         B, S, H = x.shape
-#         print(f"Initial x shape: {x.shape}")
+#         encoded_play_features = encoded_play_features.expand(-1, S, -1)
         for layer in self.layers:
             x = layer(x)
             
         x = self.norm_f(x)
-#         print(f"x shape post block norm: {x.shape}")
-#         x = x.view(B, S, 23, 5)
+#         x = torch.cat([x, encoded_play_features], dim=-1)
         logits = self.blitz_head(x)
-#         print(f"Logits shape: {logits.shape}")
-        logits = logits.reshape(B, S, 23, self.args.vocab_size)
+        logits = logits.reshape(B, S, 22, self.args.vocab_size)
 
         return logits
 
