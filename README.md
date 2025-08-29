@@ -94,10 +94,10 @@ To observe a play, along with the model's predictions for that play, run:
 PYTHONPATH=. python src/create_animation.py
 ```
 
-Check the args for this file. Ideally you can save the file as an mp4, but if not, then a .gif will be saved. Below is an example gif from a Giants vs. Cowboys game:
+Check the args for this file. Ideally you can save the file as an mp4, but if not, then a .gif will be saved. Below is an example gif:
 
-![Alt text](gifs/sack_5.gif)
+![Alt text](gifs/2022110603-3689.gif)
 
 And another:
 
-![Alt text](gifs/2022110603-3689.gif)
+![Alt text](gifs/2022110700-2307.gif)
